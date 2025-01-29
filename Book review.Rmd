@@ -1,0 +1,728 @@
+---
+title: "R course work"
+author: '30104014'
+date: "2024-02-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#importing libraries for analysis
+```{r Load , message = FALSE}
+libraries <- c("tm", "tidytext", "ggplot2", "wordcloud", "syuzhet", "dplyr", "tibble", "textstem", "textdata", "tidyr", "Matrix", "topicmodels", "stringr", "reshape2", "LDAvis", "jsonlite", "servr")
+
+
+for (lib in libraries) { 
+  library(lib, character.only=TRUE) 
+}
+```
+
+```{r Load Dataset}
+filepath <-  "C:\\Users\\basir\\Desktop\\R\\cw1\\MS4S09_CW_Book_Reviews.csv"
+df <- as_tibble(read.csv(filepath, stringsAsFactors = FALSE)) 
+
+print(summary(df))
+```
+
+
+#Inspecting the topmost and least  rows of the dataset 
+```{r view}
+print(head(df))
+print(tail(df))
+```
+
+#creating a variable for sentiment analysis 
+```{r load2}
+df1 <- df #sentiment analysis
+```
+
+
+
+# selection of features and sampling of the dataset
+```{r Select Data}
+#selecting columns for analysis
+df1 <- df1 %>% select("Title", "Rating", "Review_title",
+                    "Review_text","Genre") 
+
+
+# Removal of all rows containing null values
+df1 <- na.omit(df1) 
+
+
+#creating identifier column to identify individual reviews
+1:nrow(df1) -> df1$Review_id_new
+
+df1_tm <- df1 #for topic modelling
+print(df1_tm)
+```
+
+#Initial exploratory analysis
+```{r genre_counts}
+df1 %>% group_by(Genre) %>% summarise(count=n()) %>% arrange(desc(count))->genre_counts
+head(genre_counts) # Top 5 genres with the highest number of books
+```
+
+```{r plot_genre}
+genre_counts$Genre <- reorder(genre_counts$Genre,genre_counts$count)
+highest <- head(genre_counts,6)
+
+ggplot(highest)+
+  geom_col(aes(y = Genre, x=count),fill='Green')+
+  labs(x = "Number of books",title = "Most frequent book genres")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+# summary statistics of minimum, maximum and average number of reviews
+```{r total_genres}
+summary(genre_counts) 
+```
+
+```{r sample}
+set.seed(1) 
+
+# Filtering genres with over 100 books
+higher_than_100 = filter(genre_counts,count >= 100)
+
+#choosing 5 random sample index
+sample_index <- sample(length(unique(higher_than_100$Genre)), 5)
+
+#Selecting genres for analysis
+sampled_genre <- unique(higher_than_100$Genre)[sample_index] 
+df1 <- df1 %>% filter(Genre %in% sampled_genre)
+df1 <- df1 %>% group_by(Genre) %>% slice_sample(n=100)
+
+#ungrouping
+df1 <- ungroup(df1)
+
+
+print(summary(df))
+
+```
+
+As part of cleaning the text reviews, tokenization was utilized to break down text into smaller units to separate punctuation and special characters from actual words. Word tokenization and n-grams tokenization were the techniques used in this study.
+
+
+```{r tokenization}
+#Tokenization of the Review text column by words
+word_tokenized_data <- df1 %>%
+  unnest_tokens(output = word, input = "Review_text", token = "words", to_lower = TRUE) 
+
+#Tokenization of the Review text column into bi-grams
+bigram_tokenized_data <- df1 %>%
+  unnest_tokens(output = bigram, input = "Review_text", token = "ngrams", n=2, to_lower = TRUE) 
+```
+
+```{r initial word plot}
+#Plotting the top 10 word sorted tokenized data 
+word_counts <- word_tokenized_data %>%
+  count(word, sort = TRUE) 
+
+ggplot(word_counts[1:10, ], aes(y = reorder(word, n), x = n)) + 
+  geom_col(fill='yellow') + 
+  labs(x = "Words", y = "Frequency") + 
+  theme_classic() 
+```
+
+
+```{r Word Cloud}
+set.seed(1)
+wordcloud(words = word_counts$word, freq = word_counts$n, min.freq = 50, random.order=FALSE, random.color=FALSE, colors = sample(colors(), size = 10))
+```
+
+```{r initial bigram plot}
+bigram_counts <- bigram_tokenized_data %>%
+  count(bigram, sort = TRUE)
+
+ggplot(bigram_counts[1:10, ], aes(x = reorder(bigram, n), y = n)) +
+  geom_col(fill = "orange") +
+  labs(x = "Bigrams", y = "Frequency") +
+  coord_flip() +
+  theme_classic()
+```
+
+```{r clean data}
+#Removing stop words
+clean_tokens <- word_tokenized_data %>%
+  anti_join(stop_words, by = "word") 
+  
+
+#lemmatization of text to remove  special characters and numbers and replacing empty strings with NA.
+clean_tokens$word <- gsub("[^a-zA-Z ]", "", clean_tokens$word) %>% 
+  na_if("") %>% 
+  lemmatize_words() 
+clean_tokens <- na.omit(clean_tokens)
+```
+
+```{r untokenized to tokenized}
+#Joining the cleaned tokens to the original dataset (df)
+untokenized_data <- clean_tokens %>%
+  group_by(Review_id_new) %>%
+  summarize(clean_review = paste(word, collapse = " ")) %>% 
+  inner_join(df1[,-4], by="Review_id_new") 
+
+#Creating n-grams of the clean review column (bi-grams)
+clean_bigrams <- untokenized_data %>%
+  unnest_tokens(output = bigram, input = "clean_review", token = "ngrams", n=2, to_lower = TRUE) 
+```
+
+A plot is created for the top 10 cleaned word and bi-grams to confirm the removal of stop words. 
+```{r clean word plot}
+#Creating a count of the cleaned tokens and sorting
+word_counts <- clean_tokens %>%
+  count(word, sort = TRUE)
+
+
+#Top 10 words
+top_words <- top_n(word_counts,10,n)$word
+filtered_word_counts <- filter(word_counts, word %in% top_words)
+filtered_word_counts$word <- factor(filtered_word_counts$word, levels = top_words[length(top_words):1])
+
+#Plotting top 10 words
+ggplot(filtered_word_counts, aes(x = reorder(word, n), y = n)) +
+  geom_col(fill = "red") +
+  labs(x = "Words", y = "Frequency") +
+  coord_flip() +
+  theme_classic()
+```
+
+```{r clean bigram plot}
+#Creating a count of the bigrams and sorting
+bigram_counts <- clean_bigrams %>%
+  count(bigram, sort = TRUE)
+
+
+#Top 10 bi-grams
+top_bigrams <- top_n(bigram_counts,10,n)$bigram
+filtered_bigram_counts <- filter(bigram_counts, bigram %in% top_bigrams)
+filtered_bigram_counts$bigram <- factor(filtered_bigram_counts$bigram, levels = top_bigrams[length(top_bigrams):1])
+
+
+#Plotting the  top 10 words
+ggplot(filtered_bigram_counts, aes(x = reorder(bigram, n), y = n)) +
+  geom_col(fill = "blue") +
+  labs(x = "Bigrams", y = "Frequency") +
+  coord_flip() +
+  theme_classic()
+```
+The plot shows the removal of stop words with words such as books,read and blah being top words in the review text of the data.
+
+
+
+Exploration to view the most frequent words used in the five(5) genres chosen for the analysis.
+```{r grouped word_plot}
+
+# Grouped Words
+top_words <- top_n(word_counts,10,n)$word # Gets a vector of top 10 words
+
+#Grouping the cleaned tokens by genre and filtering by the words in the top 10 words
+grouped_count <- group_by(clean_tokens, Genre) %>% 
+  count(word) %>%
+  filter(word %in% top_words)
+
+#Ordering words by frequency
+grouped_count$word <- factor(grouped_count$word, levels = top_words[length(top_words):1]) 
+
+#Plotting the words and filling by genre
+ggplot(data = grouped_count, aes(x = word, y = n, fill = Genre)) + 
+  geom_col(position = "dodge") + 
+  labs(x = "Words", y = "Fill", fill = "Genre") +
+  coord_flip() +
+  theme_classic()
+```
+
+```{r grouped bigram plot}
+#Top 10 bi-grams per genre
+top_bigrams <- top_n(bigram_counts,10,n)$bigram
+
+grouped_count <- group_by(clean_bigrams, Genre) %>%
+  count(bigram) %>%
+  filter(bigram %in% top_bigrams)
+
+grouped_count$bigram <- factor(grouped_count$bigram, levels = top_bigrams[length(top_bigrams):1])
+
+ggplot(data = grouped_count, aes(x = bigram, y = n, fill = Genre)) +
+  geom_col(position = "dodge") +
+  labs(x = "Bigrams", y = "Fill", fill = "Genre") +
+  coord_flip() +
+  theme_classic()
+```
+
+```{r Clean Word Cloud}
+set.seed(1)
+wordcloud(words = word_counts$word, freq = word_counts$n, min.freq = 20, random.order=FALSE, random.color=FALSE, colors = sample(colors(), size = 10))
+```
+
+Applying bing lexicon
+```{r bing}
+#Forming a new dataset by joining the clean tokens with words present in bing dataset
+sentiment_data <- clean_tokens %>%
+  inner_join(get_sentiments("bing"), by = "word") 
+
+
+#For each review, a score is calculated
+sentiment_score <- sentiment_data %>%
+  group_by(Review_id_new) %>%
+  summarize(bing_sentiment = sum(sentiment == "positive") - sum(sentiment == "negative")) 
+
+#Merging with original df to easily compare scores
+df1_with_sentiment = df1 %>%
+  inner_join(sentiment_score, by = "Review_id_new")
+```
+
+
+
+The worst review per the bing scores is: 
+```{r worst bing}
+worst_reviews = df1_with_sentiment[order(df1_with_sentiment$bing_sentiment)[1],"Review_text"]
+
+for (review in worst_reviews){
+  print(review)
+}
+```
+
+
+
+The review with the best bing score is shown below: 
+```{r best bing}
+best_reviews = df1_with_sentiment[order(df1_with_sentiment$bing_sentiment, decreasing = TRUE)[1],"Review_text"]
+
+for (review in best_reviews){
+  print(review)
+}
+```
+
+The highest review text using the bing score 20, with its genre being 'Humor' has a 5 star rating.
+
+```{r bing histogram}
+# Histogram of sentiment scores
+ggplot(df1_with_sentiment, aes(x = bing_sentiment)) +
+  geom_histogram(color='black',fill='purple')
+
+```
+The  bing scores shows majority of the scores between 25 to -25.
+
+```{r bar}
+# Average sentiment scores by genre
+book_sentiment <- df1_with_sentiment %>%
+  group_by(Genre) %>%
+  summarize(avg_sentiment_score = mean(bing_sentiment))
+
+ggplot(book_sentiment)+ 
+  geom_bar(aes(x = reorder(Genre, avg_sentiment_score), 
+               y = avg_sentiment_score, fill = Genre),stat = "identity") +
+  coord_flip() +
+  labs(title = "Average Sentiment Score per Genre", x = "Genre", 
+       y = "Average Sentiment Score")+
+  theme_bw()
+
+```
+The positive average scores shows Biography and Autobiography with positive sentiments.
+
+
+
+The distribution of scores according to genres:
+```{r boxplot1}
+ggplot(df1_with_sentiment) +
+  geom_boxplot(aes(y = bing_sentiment, x=Genre,group=Genre),fill='beige') +
+  labs(title = "Boxplot of bing sentiment score vs. Genre",
+       y = "Scores",
+       x = "Genre")
+
+```
+
+
+Applying AFINN lexicon.
+Words in AFINN lexicon are associated with a sentiment score each, ranging from -5 to +5 which indicates its polarity or emotional intensity.
+```{r applying afinn}
+#Forming a new dataset by joining the clean tokens with words present in AFINN lexicon
+sentiment_data <- clean_tokens %>%
+  inner_join(get_sentiments("afinn"), by = "word")
+
+#calculating a score for each review
+sentiment_score <- sentiment_data %>%
+  group_by(Review_id_new) %>%
+  summarize(afinn_sentiment = sum(value))
+
+#Merging with df1
+df1_with_sentiment = df1_with_sentiment %>%
+  inner_join(sentiment_score, by = "Review_id_new")
+```
+
+Worst afinn scores is shown below:
+```{r inspect afinn}
+worst_reviews = df1_with_sentiment[order(df1_with_sentiment$afinn_sentiment)[1],"Review_text"]
+
+for (review in worst_reviews){
+  print(review)
+}
+```
+
+```{r best afinn}
+best_reviews = df1_with_sentiment[order(df1_with_sentiment$afinn_sentiment, decreasing = TRUE)[1],"Review_text"]
+
+for (review in best_reviews){
+  print(review)
+}
+```
+
+
+
+```{r afinn visualisations}
+# Histogram of sentiment scores
+ggplot(df1_with_sentiment, aes(x = afinn_sentiment)) +
+  geom_histogram(color='black',fill='pink')
+```
+Most of the scores are between -25 to 25 except a few exceeding 25 and a few lesser than 25.
+
+```{r average}
+# Average Sentiment by Genre
+genre_sentiment <- df1_with_sentiment %>%
+  group_by(Genre) %>%
+  summarize(avg_afinn_sentiment = mean(afinn_sentiment))
+
+ggplot(genre_sentiment, aes(x = reorder(Genre, avg_afinn_sentiment),
+                             y = avg_afinn_sentiment, fill = Genre)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Average Sentiment Score by Genre", x = "Genre", y = "Average Sentiment Score")
+
+```
+True Crime was the only genre that recorded a negative average sentiment scores. Humor had an average that was slightly above that of Literary criticism.
+
+
+
+Showing the distribution of scores according to genres
+```{r boxplot2}
+ggplot(df_with_sentiment) +
+  geom_boxplot(aes(y = afinn_sentiment, x=Genre,group=Genre),fill='violet') +
+  labs(title = "Boxplot of bing sentiment score vs. Genre",
+       y = "Scores",
+       x = "Genre")
+
+```
+
+
+
+The relationship between BING scores and AFINN scores:
+```{r scatterplot}
+
+ggplot(df1_with_sentiment) +
+  geom_jitter(aes(x = bing_sentiment,y = afinn_sentiment)) +
+  labs(title = "Bing vs. AFINN Sentiment Scores",
+       x = "Bing Sentiment Score",
+       y = "AFINN Sentiment Score")
+```
+
+
+Eight basic emotions i.e disgust, joy, sadness, surprise, trust, anticipation, fear and anger are associated with the NRC lexicon  and also two sentiments (positive or negative)
+
+```{r applying NRC}
+#Forming a new dataset by joining the clean tokens with the NRC lexicon
+emotion_data <- clean_tokens %>%
+  inner_join(get_sentiments("nrc"), by = "word")
+
+#Sentiment scores for each review
+emotion_count <- emotion_data %>%
+  group_by(Review_id_new) %>%
+  count(sentiment)
+
+#Pivots data so that there is a column associated with each emotion
+wide_emotion_data <- emotion_count %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = list(n = 0))
+
+#Merging with df1
+df1_with_sentiment = df1_with_sentiment %>%
+  inner_join(wide_emotion_data, by = "Review_id_new")
+```
+
+
+```{r inspect NRC}
+#Viewing the highest score in each of the emotions below
+
+emotions <- c("joy", "positive", "trust", "anticipation", "surprise", "sadness", "negative", "anger", "disgust", "fear")
+
+for (emotion in emotions){
+  print(paste("Review with highest score in", emotion))
+  cat("\n")
+  cat("\n")
+  review <- pull(df_with_sentiment[order(df_with_sentiment[[emotion]], decreasing = TRUE)[1],"Review_text"],"Review_text")
+  print(review)
+  cat("\n")}
+```
+
+
+
+```{r NRC Visualisations}
+#Creating a heatmap to show 
+
+long_df1 <- df1_with_sentiment %>%
+  pivot_longer(cols = c("joy", "positive", "trust", "anticipation", "surprise", "sadness", "negative", "anger", "disgust", "fear"),
+               names_to = "Emotion",
+               values_to = "Intensity")
+
+emotion_scores <- long_df1 %>%
+  group_by(Genre, Emotion) %>%
+  summarize(avg_intensity = mean(Intensity))
+
+ggplot(emotion_scores, aes(x = Genre, y = Emotion, fill = avg_intensity)) +
+  geom_tile() +  
+  scale_fill_gradient2(low = "black", high = "green") +  # Adjust colors
+  labs(x = "Genre", y = "Emotion", fill = "Intensity") +
+  theme(axis.text.x = element_text(angle = 30, hjust=1))
+```
+Higher intensity across all genres indicate positive emotions with disgust, sadness and surprise have low intensity.
+
+#TASK C
+#Topic modelling
+Topic modelling are used to understand the hidden patterns in the segmentation of customers by reviewing text feature to determine clusters.
+
+An initial data exploration analysis is performed below:
+
+```{r genrecounts}
+df1_tm %>% group_by(Genre) %>% summarise(count=n()) %>% arrange(desc(count))->genre_counts
+head(genre_counts) # Print first 6 most reviewed genres
+summary(genre_counts) # Print summary statistics to see min. max. and average no. of reviews
+```
+Data selection is an important part of topic modelling. selecting the right data key in preventing computationally expensive model.
+
+The "review_text" feature is a source of finding topics. The text count selected from the analysis ranges from 100 to 500 characters.
+
+Ten genres was used for the analysis and a 5,144 observations selected.
+```{r selecting}
+df1_tm <- df1_tm %>% 
+  filter(str_count(Review_text) >= 100 & str_count(Review_text) <= 500)
+
+set.seed(034)
+
+# selecting genres that have more than 100 reviews.
+higher_than_100 = filter(genre_counts,count >= 100)
+
+
+#Ten indexes to aid in selecting 10 genres
+sample_index <- sample(length(unique(higher_than_100$Genre)), 10)
+sampled_genre <- unique(higher_than_100$Genre)[sample_index] 
+df1_tm <- df1_tm %>% filter(Genre %in% sampled_genre)
+
+#df1_tm <- df1_tm %>% group_by(Genre) %>% slice_sample(n=100)
+
+#df1_tm <- ungroup(df_tm)
+
+print(sampled_genre)
+print(df1_tm)
+
+```
+
+
+```{r Create TDM}
+# Convert review text to corpus
+corpus <- VCorpus(VectorSource(df1_tm$Review_text))
+
+# Creating additional stopwords
+myStopwords <- c(stopwords("en"),'will','want','just','well',"dont","even","thing","cant","still","really","every","take","tell","must",'make')
+corpus <- tm_map(corpus, content_transformer(tolower)) %>%
+  tm_map(content_transformer(function(x) gsub("[^a-zA-Z ]", "", x))) %>% tm_map(removeWords, myStopwords) %>%
+  tm_map(stemDocument)
+
+#Term document matrix
+tdm <- TermDocumentMatrix(corpus, control = list(wordLengths = c(4, 15)))
+
+tdm_matrix <- as.matrix(tdm)
+```
+
+
+
+Displaying top 10 words/terms with their frequencies. 
+```{r word distribution}
+term_frequencies <- rowSums(tdm_matrix)
+
+# Create a data frame for plotting
+term_frequency_df1 <- data.frame(term = names(term_frequencies), frequency = term_frequencies)
+
+#Displaying the top 10 terms in descending order
+top_terms <- term_frequency_df1 %>%
+  arrange(desc(frequency)) %>%
+  head(10)
+
+print(top_terms)
+```
+
+A histogram is created to display term freqencies after removing the stopwords.
+```{r hist}
+# Create the histogram
+ggplot(term_frequency_df, aes(x = frequency)) +
+  geom_histogram(binwidth = 20,color='blue') +
+  labs(title = "Histogram of Term Frequencies",
+       x = "Term Frequency",
+       y = "Number of Terms")+
+  theme_minimal()
+```
+
+repeated and infrequent words was removed to prevent skewness of the topics. Terms that appear in more than 8%  and less than 1% of the document were removed. 
+```{r Word Filtering}
+# Words that appear in more than 8% of the document
+frequent_terms <- findFreqTerms(tdm, lowfreq = 0.08 * ncol(tdm_matrix))
+
+
+# Find terms that appear in less than 1% of documents
+lessfrequent_terms <- findFreqTerms(tdm, highfreq = 0.01 * ncol(tdm_matrix))
+
+print("Frequent Terms")
+print(frequent_terms)
+print("First 20 Infrequent Terms")
+print(rare_terms[1:20])
+
+```
+
+Words that might be useful for further analysis are retained as part of the meaningful words; love, recip, author
+
+```{r edit}
+# Keeping uselful words
+to_keep <- c("love","recip",'author')
+
+to_remove <- frequent_terms[!frequent_terms %in% to_keep]
+
+filtered_tdm_matrix <- tdm_matrix[!rownames(tdm_matrix) %in% to_remove, ]
+filtered_tdm_matrix <- filtered_tdm_matrix[!rownames(filtered_tdm_matrix) %in% rare_terms, ]
+
+
+# Calculate column sums
+column_sums <- colSums(filtered_tdm_matrix)
+
+# All zero columns
+zero_columns <- which(column_sums == 0)
+
+# Remove all zero columns or maintain original matrix
+if(length(zero_columns) > 0) {
+  filtered_tdm_matrix <- filtered_tdm_matrix[, -zero_columns]
+} else {
+  print("No zero columns in TDM matrix")
+}
+```
+
+
+
+```{r distribution2}
+term_frequencies <- rowSums(filtered_tdm_matrix)
+
+#Create a data frame for plotting
+term_frequency_df <- data.frame(term = names(term_frequencies), frequency = term_frequencies)
+
+#Top 10 terms(descending order)
+top_terms <- term_frequency_df %>%
+  arrange(desc(frequency)) %>%
+  head(10)
+print(top_terms)
+```
+
+
+Creating a histogram chart to display terms after removing words that are irrelevant to the analysis.
+```{r hist}
+# Create the histogram
+ggplot(term_frequency_df, aes(x = frequency)) +
+  geom_histogram(binwidth = 1,color='yellow') +
+  labs(title = "Histogram of Term Frequencies",
+       x = "Term Frequency",
+       y = "Number of Terms") +
+  theme_minimal()
+```
+
+Latent Dirichlet Allocation (LDA) is use to identify latent topics in the text and represent documents as as a mixture of this topics.
+LDA is applied to a transposed document term matrix, with the 7 number of topics.
+
+```{r LDA model}
+dtm <- t(filtered_tdm_matrix)
+lda_model <- LDA(dtm, k = 7)
+```
+
+
+Visualizing topics created by the model
+
+```{r LDA Visualisation}
+#Creating a probability of each word in a topic
+topics <- tidy(lda_model, matrix = "beta")
+
+#Top 7 terms with highest probabliity
+top_terms <- topics %>%
+  group_by(topic) %>%
+  top_n(7, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+#creating a bar chart with the terms in each topic
+top_terms %>%
+  ggplot(aes(x = reorder(term, beta), 
+             y = beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip() 
+
+```
+A bar plot showing the terms in each of the seven topics
+
+```{r k}
+range_k <- seq(2, 10, by = 1)  
+perplexities <- sapply(range_k, function(k) {
+  model <- LDA(dtm, k = k, control = list(seed = 1))
+  perplexity(model)
+})
+
+# Plotting perplexities
+plot(range_k, perplexities, type = "b", xlab = "Number of Topics", ylab = "Perplexity")
+```
+This perplexity plot helps in the selection of the suitable number of topics for the model. 
+
+
+The LDAvis assist in the interpretation of topics and the visualization shows only 2 topics had minor similarities, with all other topics being different, this signigies  the distinctions of the topics  from each other. 
+```{r visualisation}
+set.seed(1)
+lda_model <- LDA(dtm, k = 7)
+
+lda_vis_data <- createJSON(phi = posterior(lda_model)$terms,
+                          theta = posterior(lda_model)$topics,
+                          doc.length = rowSums(as.matrix(dtm)),
+                          vocab = colnames(as.matrix(dtm)),
+                          term.frequency = colSums(as.matrix(dtm)))
+
+serVis(lda_vis_data)
+```
+ Summary of chapter:
+ In other to understand the frequent themes in the review of Amazon books, a topic modelling technique called LDA was used for the review of the books from different genres. Ten genres was selected for the analysis and to vary topics to be attained from the analysis. The analysis involved the removal of common/rare words which was not significant in the analysis. 
+Seven (7) topics was selected  from the model because these topics was unique and also contained coherent topics after applying the LDAvis (vizualisation tool).
+
+Topic 1  'Exploring cooking: from recipes to practice love'. 
+This involves trying out new recipes, an interesting way of exploring new flavors.
+
+Topic 2: 'Thinking, learning and connecting with people'
+This will involve alot of self development,making new friends and connections.
+
+Topic 3: 'Striving for excellence in cooking'
+This might involve the act of trying to be good cook by cooking frequently and trying to get better at it each time.
+
+Topic 4: 'Love for health'
+This topic will involve improving our health by making good social connections with people
+
+Topic 5: 'The Journey of Love: Exploring Connections, Joy, and Wonder'
+It is a love that transcends boundaries of time and space, uniting kindred spirits in a shared journey of growth, discovery, and mutual support.
+
+Topic 6: 'Family Traditions and Treasured Memories: Recipes, Love, and Shared Stories'
+This topic might be all about how to ensure family connections by probably cooking together
+
+Topic 7:"The Art of Cooking: Creating Recipes with Love and Enjoyment"
+This topic might involve trying out new recipes and enjoying the output.
+
+TASK D
+```{r spacyr}
+install.packages("spacyr") #Run on first execution
+library("spacyr")
+spacy_install() #run on first execution
+spacy_initialize(model = "en-core_web_sm")
+```
+
+```{r using spacy}
+corpus <- df1$"Review_text"
+#perform named entity recognition
+entities <- spacy_parse(corpus, dependency = TRUE)
+# view the entities
+print(entities)
+```
